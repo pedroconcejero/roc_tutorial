@@ -1,0 +1,436 @@
+---
+output: word_document
+---
+If you read this file as R code, make sure you have installed knitr in order to correctly run the code and view results in a html doc (ie with Knit HTML in RStudio)
+```{r}
+
+```
+
+```{r, echo = FALSE}
+
+if ("knitr" %in% row.names(installed.packages())  == FALSE)
+ install.packages("knitr", dependencies = TRUE, repos = "http://cran.es.r-project.org/")
+library(knitr)
+```
+
+Measuring predictive performance and screening with ROC in R (ROCR, pROC)
+========================================================
+author: Pedro.Concejero at Telefónica Investigación y Desarrollo (tid.es)
+date: 27th February 2014
+
+gRupo R madRid 
+http://r-es.org/Grupo+de+Inter%C3%A9s+Local+de+Madrid+-+GIL+Madrid&structure=Comunidad 
+
+Very special thanks to
+========================================================
+
+- Luis Mariano Esteban from Universidad Zaragoza
+- My colleagues Paulo, Goyo, David & Fernando from Telefónica I+D
+- gRupo R madRid participants
+
+What is ROC
+========================================================
+
+ROC means Receiver Operating Characteristic 
+(also Curve)
+
+**Don't google 'ROC'**, you will go to pharmaceutical company (or to Redeeming Our Communities)
+
+**Google 'ROC curve'**
+  
+A good source: wikipedia
+
+http://en.wikipedia.org/wiki/Receiver_operating_characteristic
+
+(y en español)
+http://es.wikipedia.org/wiki/Curva_ROC
+
+  
+ROC libraries in R
+========================================================
+Install the two libraries we will use throughout the presentation
+
+¡CAVEAT!
+
+ROCR (all uppercase) 
+
+pROC (first letter is lowercase)
+
+sqldf and gmodels also useful later
+
+```{r, echo = FALSE}
+
+if ("ROCR" %in% row.names(installed.packages())  == FALSE)
+ install.packages("ROCR", dependencies = TRUE, repos = "http://cran.es.r-project.org/")
+if ("pROC" %in% row.names(installed.packages())  == FALSE)
+ install.packages("pROC", dependencies = TRUE, repos = "http://cran.es.r-project.org/")
+if ("sqldf" %in% row.names(installed.packages())  == FALSE)
+ install.packages("sqldf", dependencies = TRUE, repos = "http://cran.es.r-project.org/")
+if ("gmodels" %in% row.names(installed.packages())  == FALSE)
+ install.packages("gmodels", dependencies = TRUE, repos = "http://cran.es.r-project.org/")
+
+```
+***
+```{r}
+
+library(ROCR)
+library(pROC)
+library(sqldf)
+library(gmodels)
+```
+ROCR site http://rocr.bioinf.mpi-sb.mpg.de/
+
+pROC site http://web.expasy.org/pROC/
+
+PSA data
+========================================================
+
+Data from Etzioni, Pepe et al. (1999): Incorporating the Time Dimension in Receiver Operating Characteristic Curves: A Case Study of Prostate Cancer. Med Decis Making 1999; 19:242-251 
+
+PSA = "Prostate Specific Antigen"
+
+http://labs.fhcrc.org/pepe/dabs/datasets.html
+
+```{r}
+# PUT YOUR WORKING DIRECTORY HERE!
+
+setwd("C:/Users/pedroc/Desktop/madRid-R/ROC")
+
+datos <- read.table(file = "http://research.fhcrc.org/content/dam/stripe/diagnostic-biomarkers-statistical-center/files/psa2b.csv",
+                    sep = ",",
+                    header = TRUE)
+```
+PSA data
+========================================================
+
+http://labs.fhcrc.org/pepe/book/data/psa2b_desc.txt
+
+d - diagnostic |
+fpsa - free PSA |
+tpsa - total PSA 
+
+```{r}
+str(datos)
+```
+
+
+PSA data
+========================================================
+
+Apart from that we have repeated PSA measures in time -t- and age at the moment of test.
+But we are not going to use the time dimension for our ROC -will use simplest model:
+obtain the first PSA measure but you must know diagnostic might be done at the end of the process
+```{r}
+
+datos.originales <- datos
+
+datos <- sqldf("select id, d, min(t), fpsa, tpsa, age from 'datos.originales'
+               group by id")
+```
+
+PSA data
+========================================================
+
+This study is an age-matched case-control design: each diagnosed case was assigned a control matched to case by date of birth. There are 70 of each group. One of the main advantages of ROC: it is applicable to any study **independently of base rate**. In this case: 50%.
+
+```{r}
+barplot(table(datos$d))
+```
+
+PSA data
+========================================================
+
+```{r}
+# Diagnosed = 1
+hist(datos$age[datos$d == 1],
+     main = "Histogram of ages for diagnosed = 1")
+```
+***
+```{r}
+# Diagnosed = 0
+hist(datos$age[datos$d == 0],
+     main = "Histogram of ages for diagnosed = 0")
+```
+
+PSA data
+========================================================
+```{r}
+boxplot(datos$fpsa ~ datos$d,
+        main = "Boxplot of FPSA per diagnostic group")
+```
+
+***
+```{r}
+boxplot(datos$tpsa ~ datos$d,
+        main = "Boxplot of TPSA per diagnostic group")
+```
+
+PSA data
+========================================================
+```{r, echo = FALSE}
+plot(density((datos$fpsa[datos$d == 0])),
+     col = "blue", xlim = c(0, 4),
+     main = "FPSA density for diagnosed = 0 (blue) and 1 (red)")
+lines(density((datos$fpsa[datos$d == 1])), 
+     col = "red")
+```
+***
+```{r, echo = FALSE}
+plot(density((datos$tpsa[datos$d == 0])),
+     col = "blue", xlim = c(0, 20),
+     main = "TPSA density for diagnosed = 0 (blue) and 1 (red)")
+lines(density((datos$tpsa[datos$d == 1])), 
+     col = "red")
+```
+
+PSA data
+========================================================
+
+More usually, we will use a log transformation 
+
+```{r, echo = FALSE}
+plot(density(log(datos$fpsa[datos$d == 0])),
+     col = "blue", xlim = c(-5, 5),
+     main = "log(FPSA) density for diagnosed = 0 (blue) and 1 (red)")
+lines(density(log(datos$fpsa[datos$d == 1])), 
+     col = "red")
+```
+***
+```{r, echo = FALSE}
+plot(density(log(datos$tpsa[datos$d == 0])),
+     col = "blue", xlim = c(-5, 5),
+     main = "log(TPSA) density for diagnosed = 0 (blue) and 1 (red)")
+lines(density(log(datos$tpsa[datos$d == 1])), 
+     col = "red")
+```
+
+The 2 x 2 table for each cutoff point
+========================================================
+
+Thanks english wikipedia!
+http://en.wikipedia.org/wiki/Receiver_operating_characteristic#Basic_concept
+
+![two-way table for each cutoff point](2-way-table.png)
+
+TPSA cutoff point 2
+========================================================
+
+Performance at different cutoff points. Let's see 2 for tpsa
+
+```{r, echo = FALSE}
+datos$scree <- "b-test neg"
+datos$scree[datos$tpsa >= 2] <- "a-test pos"
+datos$cond <- "a-cond pos"
+datos$cond[datos$d == 0] <- "b-cond neg"
+
+CrossTable(datos$scree, datos$cond, 
+           prop.c = TRUE,
+           prop.chisq = FALSE,
+           prop.r = FALSE,
+           prop.t = FALSE)
+```
+
+TPSA cutoff point 4
+========================================================
+
+Performance at different cutoff points. Let's see 4 for tpsa
+
+```{r, echo = FALSE}
+datos$scree <- "b-test neg"
+datos$scree[datos$tpsa >= 4] <- "a-test pos"
+datos$cond <- "a-cond pos"
+datos$cond[datos$d == 0] <- "b-cond neg"
+
+CrossTable(datos$scree, datos$cond, 
+           prop.c = TRUE,
+           prop.chisq = FALSE,
+           prop.r = FALSE,
+           prop.t = FALSE)
+```
+
+
+Plot ROC with ROCR
+========================================================
+
+ROC is **a set of points** in the square space (0, 1) x (0, 1) where each point is the pair
+(FPR: FALSE Positives Ratio - x axis, TPR: TRUE Positives Ratio - y axis) 
+
+```{r, echo = FALSE}
+
+plot(c(0, 1), c(0, 1), type= "n", xlab = "TPR", ylab = "FPR")
+points(.171, .732)
+points(.029, .465)
+
+```
+
+ROC with ROCR - example participant's id
+========================================================
+
+prediction creates the predictor + criterion object
+
+performance creates the object with measures **from prediction object**
+
+Let's use this for the id - just in case it predicts anything
+```{r}
+
+pred.z.01 <- prediction(datos$id, datos$d)
+
+# uso: performance(prediction_object, "tpr", "fpr") creates the object with performance metrics
+# TPR: True Positive Ratio
+# FPR: False Positive Ratio
+
+perf.z.01 <- performance(pred.z.01, "tpr", "fpr")
+
+```
+ROC for participant's id
+========================================================
+
+We also plot the null predictive performance (when TPR = FPR; or diagonal in ROC space).
+
+AUC = Area Under Curve (0.5 = null predictive perf. 1 = perfect predictive perf)
+
+```{r}
+
+plot.new()
+plot(perf.z.01, col = "green") 
+abline(0, 1, 
+       col = "grey")
+
+auc.z.01 <- performance(pred.z.01, "auc")
+
+legend("bottomright", 
+       paste(round(as.numeric(auc.z.01@y.values), digits = 2)), 
+       col = c("green"),
+       pch = c(3))
+```
+ROC for participant's id
+========================================================
+
+AUC = 0.45 -> null predictive perf. (as could be expected)
+
+```{r, echo = FALSE}
+
+plot.new()
+plot(perf.z.01, col = "green") 
+abline(0, 1, 
+       col = "grey")
+
+auc.z.01 <- performance(pred.z.01, "auc")
+
+legend("bottomright", 
+       paste(round(as.numeric(auc.z.01@y.values), digits = 2)), 
+       col = c("green"),
+       pch = c(3))
+```
+
+ROC for fpsa, tpsa and age
+========================================================
+
+```{r, echo = FALSE}
+
+pred.z.01 <- prediction(datos$age, datos$d)
+pred.z.02 <- prediction(datos$fpsa, datos$d)
+pred.z.03 <- prediction(datos$tpsa, datos$d)
+
+
+perf.z.01 <- performance(pred.z.01, "tpr", "fpr")
+perf.z.02 <- performance(pred.z.02, "tpr", "fpr")
+perf.z.03 <- performance(pred.z.03, "tpr", "fpr")
+
+plot.new()
+plot(perf.z.01, col = "green") 
+abline(0, 1, 
+       col = "grey")
+plot(perf.z.02, col = "blue", add = TRUE) 
+plot(perf.z.03, col = "brown", add = TRUE) 
+
+auc.z.01 <- performance(pred.z.01, "auc")
+auc.z.02 <- performance(pred.z.02, "auc")
+auc.z.03 <- performance(pred.z.03, "auc")
+
+for_legend <- c(paste("Age ", round(as.numeric(auc.z.01@y.values), digits = 2)),
+                paste("fpsa ", round(as.numeric(auc.z.02@y.values), digits = 2)),
+                paste("tpsa ", round(as.numeric(auc.z.03@y.values), digits = 2)))
+
+legend("bottomright", 
+       for_legend, 
+       col = c("green", "blue", "brown"),
+       pch = c(3))
+
+```
+
+ROC with pROC
+========================================================
+Far easier!
+
+```{r}
+pROC::plot.roc(datos$d, datos$tpsa,
+               print.auc = TRUE)
+```
+
+ROC with pROC - with age groups
+========================================================
+
+green 45-55 blue 55-65 red >65
+
+```{r, echo = FALSE}
+
+datos$age_gr <- cut(datos$age, 
+                    breaks = c(45, 55, 65, 100))
+pROC::plot.roc(datos$d[datos$age_gr == "(45,55]"], 
+               datos$tpsa[datos$age_gr == "(45,55]"],
+               print.auc = TRUE, col = "green", print.auc.col = "green", print.auc.y = 0.97, print.auc.x = 0.7)
+pROC::plot.roc(datos$d[datos$age_gr == "(55,65]"], 
+               datos$tpsa[datos$age_gr == "(55,65]"],
+               print.auc = TRUE, col = "blue", add = TRUE, print.auc.col = "blue", print.auc.y = 0.82, print.auc.x = 0.7)
+pROC::plot.roc(datos$d[datos$age_gr == "(65,100]"], 
+               datos$tpsa[datos$age_gr == "(65,100]"],
+               print.auc = TRUE, col = "red", add = TRUE, print.auc.col = "red", print.auc.y = 0.6, print.auc.x = 0.8)
+
+```
+
+
+CONCLUSIONS
+========================================================
+- ROC is standard in medicine - huge experience in using this for screening and also for diagnostic performance of many types of tests
+- We have seen one direct measure (tPSA), but you can measure predictive performance of any output of predictive models though you need a binary criterion
+- Do not make a confusion with AUC -it is no percentage!! It is an abstract measure of performance
+- You can use statistical contrasts to test differences between predictors, as well as predictors versus null predictive performance
+- Make your choice pROC is more recent, many useful functions, ROCR maybe makes fancier plots
+- R is **absolutely** the best option to make ROC analysis
+
+
+APPENDIX - save workspace
+========================================================
+```{r}
+
+save.image("roc_psa_wkspace.rdata")
+
+```
+APPENDIX - Origins in Signal Theory
+========================================================
+Two normal distributions, same sd different mean
+
+```{r, echo = FALSE}
+s <- seq(-4, 6, 0.01)
+mean1 <- 0
+mean2 <- 2
+sd <- 1
+  
+plot(s, dnorm(s, mean1, sd), type = "l", col = "blue")
+lines(s, dnorm(s,mean2, sd), col = "red")
+segments(1, 0, 1, 0.5, col = "green")
+
+```
+
+APPENDIX - ROC with pROC - many useful options
+========================================================
+auc.polygon
+
+```{r}
+pROC::plot.roc(datos$d, datos$tpsa,
+               print.auc = TRUE,
+               grid = TRUE,
+#               partial.auc = c(100, 90),
+               auc.polygon = TRUE)
+```
