@@ -1,0 +1,478 @@
+---
+title: "Screening para detección rápida de impagos en créditos"
+author: "pedro.concejerocerezo@gmail.com"
+date: "17 de noviembre de 2016"
+output: word_document
+---
+
+
+# Introducción
+
+Screening (se puede traducir como "cribado", o aunque sean dos palabras, "detección rápida") es una metodología ampliamente difundida en medicina y en otras ciencias. El objetivo es detectar cuanto antes la posibilidad de que aparezca un evento, que puede ser una enfermedad, un síntoma, u otros eventos que formen parte de un diagnóstico.
+
+Screening incluye todo el conjunto de metodologías para calibrar estos instrumentos de detección, junto con la gestión de prácticas previas y posteriores a las pruebas concretas.
+
+Quizás el mejor ejemplo de prueba de screening es el de detección del VIH, conocida como ELIZA. Aunque es poco sabido, se trata efectivamente de una prueba de screening, con un porcentaje considerable de falsos positivos. Es importante recalcar que aunque es un paso en el diagnóstico, el resultado del screening *no es el diagnóstico*. Precisamente el ELIZA, sólo en el caso de resultar positivo, requiere un segundo test denominado Western Blot que es mucho más costoso y que sí se considera diagnóstico. 
+
+De lo que se trata precisamente es de tener mecanismos rápidos baratos y lo más fácilmente aplicables posibles para filtrar aquellos elementos o individuos en riesgo y concentrar el esfuerzo diagnóstico en los que realmente lo necesitan.
+
+El [screening en medicina](https://en.wikipedia.org/wiki/Screening_%28medicine%29) tiene infinidad de aplicaciones, y el propósito concreto de esta presentación es dara a conocer esta metodología para su aplicación en áreas de negocio. En concreto en la detección de impagos en créditos, una aplicación clásica de los modelos predictivos.
+
+# Preparación del entorno R
+
+
+```{r setup_environment, echo=FALSE}
+
+setwd("C:/Users/pedroc/Desktop/ROC screening 2016")
+
+# Required libraries
+library(data.table)
+library(XLConnect)
+library(ROCR)
+library(lattice)
+library(pROC)
+
+```
+
+
+# Propósito
+
+- Proponer metodología de detección rápida de variables asociadas a evento que se quiere predecir
+- Aplicar, y en su caso adaptar, técnicas estadísticas del campo epidemiología, médico (screening)
+- Prototipar estas metodologías con un caso de negocio, en concreto detectar impagos ("defaults") o retrasos en créditos
+
+# Datos crediticios
+
+Hay muchos datos de credit scoring, algunos relativamente simples (German credit, o los datos en UCI) y otros de competiciones limitadas (p.ej. [esta competición de kaggle](https://inclass.kaggle.com/c/to-loan-or-not-to-loan-that-is-the-question/data). O también estos [Datos de Prospectus](https://www.lendingclub.com/info/download-data.action).
+
+Pero me ha parecido más interesante este conjunto de datos, de una startup del campo "fintech" llamada [LendingClub](https://www.lendingclub.com/public/how-peer-lending-works.action), muy interesante porque utiliza la filosofía del "crowdfunding" para facilitar y abaratar el crédito. 
+
+Extraído directamente de la descripción de sus actividades:
+
+Lending Club uses technology to operate a credit marketplace at a lower cost than traditional bank loan programs, passing the savings on to borrowers in the form of lower rates and to investors in the form of solid returns. Borrowers who used a personal loan via Lending Club to consolidate debt or pay off high interest credit cards report in a survey that the interest rate on their loan was an average of 33% lower than they were paying on their outstanding debt or credit cards.1
+
+By providing borrowers with better rates, and investors with attractive, risk-adjusted returns, Lending Club has earned among the highest satisfaction ratings in the financial services industry.2
+
+Here's how it works:
+
+Customers interested in a loan complete a simple application at LendingClub.com
+We leverage online data and technology to quickly assess risk, determine a credit rating and assign appropriate interest rates. Qualified applicants receive offers in just minutes and can evaluate loan options with no impact to their credit score
+Investors ranging from individuals to institutions select loans in which to invest and can earn monthly returns
+
+# Descarga de datasets
+
+De su propia descripción del dataset:
+
+Estos ficheros contienen todos los datos de los préstamos emitidos en el periodo de tiempo establecido, incluyendo el último status del préstamos (Current, Late, Fully Paid, etc.) y la última información de pagos. 
+
+
+```{r descarga_de_fichero_de_datos}
+
+url <- "https://resources.lendingclub.com/LoanStats3a.csv.zip"
+
+descargado <- "LoanStats3a.csv.zip"
+
+if (file.exists(descargado)){
+    print("El fichero de datos ya está descargado")
+} else {
+    print("Vamos a descargar el fichero")
+    download.file(url,
+                  destfile = descargado,
+                  mode = "wb")
+
+}
+
+descargado.unz <- unzip(descargado)
+
+```
+
+Probamos a leer directamente desde el zip
+
+```{r}
+
+data <- fread(descargado.unz,
+              skip = 1,
+              header = T, 
+              sep = ",")
+
+```
+
+Observamos que las variables aparecen como cadenas de caracteres, posteriormente las asignaremos clases.
+
+También podemos descargarnos el diccionario
+
+```{r}
+
+diccio.url <- "https://resources.lendingclub.com/LCDataDictionary.xlsx"
+
+descargado <- "LCDataDictionary.xlsx"
+
+if (file.exists(descargado)){
+    print("El fichero de datos ya está descargado")
+} else {
+    print("Vamos a descargar el fichero")
+    download.file(diccio.url,
+                  destfile = descargado,
+                  mode = "wb")
+}
+
+
+diccio <- readWorksheetFromFile(descargado,
+                              sheet = 1,
+                              header = T,
+                              startRow = 1)
+
+
+```
+
+Lamentablemente no contiene explícitas las clases de las variables descargadas. 
+Lo malo: no está en el mismo orden que los datos, por lo que sólo lo usaremos para consultar el significado de columnas concretas.
+
+```{r}
+View(diccio)
+
+```
+
+Y estas pueden ser las clases de las columnas. Convertimos en principio solo las numéricas
+
+```{r}
+
+
+clases <- c(rep("character", 2), #los campos id  
+            rep("numeric",   3), #cantidades concedidas en credito
+            rep("character", 2), #term = duración e int_rate - habrá que convertir a numérico
+            rep("numeric",   1), #installment = The monthly payment owed by the borrower if the loan originates
+            rep("factor",    2), #grade and subgrade
+            rep("character", 3), #empleo y tiempo en empleo -habrá que convertirlo en numérico
+            rep("numeric",   1), #annual_income, self-reported
+            rep("character",10), #empleo y tiempo en empleo -habrá que convertirlo en numérico
+            rep("numeric",   2), # dti ratio monthly debt payments on total debt, exc mortgage  loan, divided by monthly income
+            rep("character", 1), #The month the borrower's earliest reported credit line was opened
+            rep("numeric",   6),
+            rep("character", 1), #porcentaje que habrá que convertir
+            rep("numeric",   1),
+            rep("character", 1),
+            rep("numeric",   9),
+            rep("character", 1), #una fecha
+            rep("numeric",   1),
+            rep("character", 2),
+            rep("numeric",   3),
+            rep("character", 1),
+            rep("numeric",   2),
+            rep("character", 1),
+            rep("numeric",  55)
+)
+
+numericas <- grep("numeric", clases)
+
+data <- as.data.frame(data)
+
+data[, numericas] <- lapply(data[, numericas], function(x) as.numeric(x))
+
+
+```
+
+La mitad de la tabla no tiene datos, columnas collections_12_mths_ex_med [50] y siguientes. Perdemos del orden de 50 variables.
+
+```{r}
+#summary(data)
+dim(data)
+
+data <- data[,colSums(is.na(data)) < nrow(data)]
+
+dim(data)
+
+summary(data)
+
+```
+
+También tenemos algunas variables constantes, las quitamos
+
+```{r}
+
+dim(data)
+data <- data[ ,!apply(data, 
+                       MARGIN = 2, 
+                       function(x) max(x, na.rm = TRUE) == min(x, na.rm = TRUE))]
+dim(data)
+
+```
+
+
+# Definición del objetivo de detección: impago
+Lo importante ahora es definir adecuadamente el impago, y en concreto tenemos varias definiciones posibles de default
+
+```{r}
+
+table(data$loan_status)/nrow(data)*100
+```
+
+Debemos informarnos sobre el significado de los estados del crédito:
+
+[Loan status explained](http://help.bitbond.com/knowledgebase/articles/515476-the-10-loan-status-variants-explained)
+[Understanding loan status](https://www.orchardplatform.com/blog/understanding-loan-statuses/)
+
+
+
+```{r}
+
+kk <- data[, numericas[1:24]]
+
+kk <- cbind(kk, data$loan_status)
+
+kk$loan_status_orig <- kk$loan_status
+
+kk$loan_status <- "Y"
+
+kk$loan_status[kk$'data$loan_status' %in% c("Default",
+                                            "Late (16-30 days)",
+                                            "Late (31-120 days)",
+                                            "Charged Off")] <- "N"
+
+
+kk$loan_status <- as.factor(kk$loan_status)
+
+summary(kk)
+
+table(kk$loan_status)/nrow(kk)*100
+
+```
+
+# Screening mediante Wilcoxon (ROCR)
+
+
+Carguemos la función wilcoxon
+
+```{r}
+
+#  v.01  28/08/2012
+#  v.02  16/10/2012     Absolute AUC value and decreasing ordenation 
+#  Purpose of program, inputs, and outputs 
+#  R code for computing ROC AUC's (same as wilcoxon)
+#  source() and library() statements 
+#  Dependencies: ROCR package
+
+wmw <- function(object, ini.col, fin.col, num.target, write.out=NA, 
+                write.name=NA){
+                  options(warn=-1)
+                  library(ROCR)
+                  df <- data.frame()
+                  
+                  for (i in ini.col:fin.col){
+                    pred <- prediction(object[, c(i)], object[, c(num.target)])
+                    
+                    #Calculate the area under curve in the diagram
+                    perf <- performance(pred, "auc")
+                    auc <- as.numeric(perf@y.values)
+                    
+                    df[i, 1] <- names(object)[i]
+                    if (auc < 0.500) {auc <- 1-auc}
+                    df[i, 2] <- auc
+                  }
+                  names(df) <- c("var", "score")
+                  df <- df[order(df$score, decreasing=TRUE, na.last=TRUE), ]
+                  rm(pred, perf, auc)
+                  
+                  if(write.out == 'TRUE'){
+                    write.table(df, file=write.name, quote = FALSE)
+                  }
+                  return(df)
+                }
+
+```
+
+Aquí disponemos de una función que en realidad implementa un bucle, primero hay que definir el target, bueno en realidad el número de variable en la tabla
+
+function(object, ini.col, fin.col, num.target, write.out=NA,  write.name=NA)
+
+Según parece, la función requiere columnas contiguas, así que vamos a extraer las columnas que nos interesan.
+
+
+Intentemos ahora la función wilcoxon
+
+```{r}
+
+wmw(kk,         #el objeto sobre el que se va a calcular el wilcoxon
+    1, 22,      #columnas contiguas
+    26,         #num de columna target
+    write.out = "TRUE",
+    write.name = "primera_prueba.txt"
+)
+
+```
+
+Hay variables que tienen una relación muy fuerte con el target, porque dependen de él. Es el caso de las recuperaciones después de "Charge Off"
+
+22              recoveries 0.8742504
+23 collection_recovery_fee 0.8358025
+
+Aquí me doy cuenta de una cosa: aquellos "loans" con "charge off" es porque ya están vencidos. En las páginas que he consultado sobre el estado de préstamos, éstos se "dan por perdidos", se plantea incluso su venta a recuperadores -con su coste adicional. 
+
+Pero también tenemos variables que no 
+19         total_rec_prncp 0.8314364
+
+
+Intentaremos responder a las siguientes preguntas:
+- ¿Tenemos alguna manera de descartar las predictoras que son estrictamente inútiles? (contraste estadístico de capacidad predictiva cero)
+- Una vez elegida una variable, ¿qué rango / valores seleccionamos para una observación más detallada?
+- ¿Cómo podemos dibujar las ROC de la mejor manera para tomar decisiones basadas en ellas?
+- ¿Qué ventajas tiene este enfoque frente al tradicional del modelo? (Del que por otro lado es totalmente complementario)
+- extraer rápidamente óptimos de punto corte a partir de cruce sensib. especif. (posteriormente modificarlos con prevalencia)
+
+
+```{r}
+
+d1 <- densityplot( ~ log(total_rec_prncp + 0.1),   #Para evitar tener los 0's originales como NAs
+                   data = kk,
+                   groups = loan_status,
+                   auto.key = TRUE)
+
+print(d1)
+
+```
+
+# Variables sin apenas capacidad predictiva
+
+Las siguientes variables 
+
+
+```{r}
+
+d1 <- densityplot( ~ mths_since_last_delinq,   
+                   data = kk,
+                   groups = loan_status,
+                   auto.key = TRUE)
+
+print(d1)
+
+```
+
+
+```{r}
+
+d1 <- densityplot( ~ log(annual_inc),   
+                   data = kk,
+                   groups = loan_status,
+                   auto.key = TRUE)
+
+print(d1)
+
+```
+
+
+Veamos a partir de lo que ya sabemos, si podemos detectar los créditos vivos. Estos serán aquellos cuya cantidad recuperada (total_rec_prncp) sea inferior al total del préstamo (loan_amnt), y veamos la distribución en aquellos cuya razón entre ambas sea menor a 1 (créditos en principio vivos).
+
+```{r}
+
+hist(log(kk$total_rec_prncp/ kk$loan_amnt[kk$total_rec_prncp/ kk$loan_amnt < 1]))
+
+summary(log((kk$total_rec_prncp/ kk$loan_amnt[kk$total_rec_prncp/ kk$loan_amnt < 1])+ 0.01))
+
+
+```
+
+Tenemos una bonita curva normal. Veamos qué tal distingue entre loan_status Y ó N.
+
+```{r}
+
+kkk <- kk[kk$total_rec_prncp/ kk$loan_amnt < 1,]
+
+dim(kkk)
+
+kkk$ratio <- (kkk$total_rec_prncp/ kkk$loan_amnt) 
+
+table(kkk$loan_status)
+
+d1 <- densityplot( ~ (kkk$ratio),   
+                   data = kkk,
+                   groups = loan_status,
+                   auto.key = TRUE)
+
+print(d1)
+
+
+```
+
+Veamos el funcionamiento de WmW
+
+```{r}
+
+# Necesitamos columnas contiguas
+
+k4 <- kkk[, c(1:20,
+              27,
+              26,
+              25)]
+
+wmw(k4,         #el objeto sobre el que se va a calcular el wilcoxon
+    1, 21,      #columnas contiguas
+    22,         #num de columna target
+    write.out = "TRUE",
+    write.name = "primera_prueba.txt"
+)
+
+
+#table(k4$`data$loan_status`)
+```
+
+# CONTRASTE ESTADÍSTICO DE CURVAS ROC 
+
+El paquete [pROC](https://cran.r-project.org/web/packages/pROC/index.html) proporciona métodos para el contraste estadístico de curvas ROC. Probemos por ejemplo si con nuestra proporción de pagado versus obtenido ("ratio") mejoramos la capacidad predictiva de uno de sus componentes ("total_rec_prncp").
+
+Podemos primero crear dos objetos ROC:
+
+```{r}
+
+roc1 <- pROC::roc(response = k4$loan_status,
+                  predictor = k4$total_rec_prncp,
+                  auc = TRUE,
+                  ci = TRUE)
+
+```
+
+Con pROC podemos dibujar fácilmente la curva y además sus intervalos de confianza mediante "bootstrap"
+
+```{r}
+plot(roc1)
+
+ci.threshodls.obj <- ci.thresholds(roc1)
+plot(ci.threshodls.obj)
+
+```
+
+Segundo objeto ROC
+
+```{r}
+
+roc2 <- pROC::roc(response = k4$loan_status,
+                  predictor = k4$ratio,
+                  auc = TRUE,
+                  ci = TRUE)
+
+plot(roc2)
+```
+
+Y la comparación estadística entre ambas:
+
+```{r}
+
+pROC::roc.test(roc1, roc2,
+               alternative = "two.sided")
+```
+
+
+# CONCLUSIONES
+
+- screening puede ser mucho más rápido y más manejable que hacer modelos estadísticos
+- ROC es una metodología muy avanzada y sin ningún lugar a dudas la mejor implementación es en librerías R
+- limitaciones: objetivo de predicción binario y predictores cuantitativos
+- ventajas: muy rápido y no paramétrico
+
+# REFERENCIAS
+
+- Pepe, Margaret: [procedimientos roccurve, comproc, rocreg y predcurve](http://research.fhcrc.org/diagnostic-biomarkers-center/en/software/rocbasic.html)
+
+- Robin, Xavier, et al. (2011): pROC: an open-source package for R and S+ to analyze and compare ROC curves. Robin et al . BMC Bioinformatics 2011, 12:77. [enlace](http://www.biomedcentral.com/1471-2105/12/77) 
+
+- Tobias Sing, Oliver Sander, Niko Beerenwinkel, Thomas Lengauer (2005): ROCR: visualizing classifier performance in R.
+Bioinformatics 21(20):3940-3941. [sitio web de ROCR con toda la información](http://rocr.bioinf.mpi-sb.mpg.de/)
